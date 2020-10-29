@@ -1,0 +1,11 @@
+domain: skydive.network
+layout: go.kubebuilder.io/v2
+projectName: skydive-operator
+repo: github.com/openshift/skydive-operator
+resources:
+- group: config
+  kind: Skydive
+  version: v1alpha1
+version: 3-alpha
+plugins:
+  go.sdk.operatorframework.io/v2-alpha: {}

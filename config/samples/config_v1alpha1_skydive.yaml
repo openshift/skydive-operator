@@ -1,0 +1,7 @@
+apiVersion: config.skydive.network/v1alpha1
+kind: Skydive
+metadata:
+  name: skydive-sample
+spec:
+  # Add fields here
+  foo: bar
