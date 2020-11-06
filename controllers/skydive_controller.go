@@ -22,7 +22,6 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -66,8 +65,34 @@ func (r *SkydiveReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
+	// Check for the Skydive analyzer Service
+	// TODO If the Service exists, make sure it's current
+	// TODO Reconcile on Service changes
+	curAnalyzerService := &corev1.Service{}
+	err = r.Get(ctx, types.NamespacedName{Name: "skydive-analyzer", Namespace: skydive.Namespace}, curAnalyzerService)
+	if err != nil && errors.IsNotFound(err) {
+		svc, err := r.analyzerService(skydive)
+		if err != nil {
+			log.Error(err, "Failed to create new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating a new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
+		err = r.Create(ctx, svc)
+		if err != nil {
+			log.Error(err, "Failed to create new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
+			return ctrl.Result{}, err
+		}
+		// Service created successfully - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+
+	} else if err != nil {
+		log.Error(err, "Failed to get Analyzer ConfigMap")
+		return ctrl.Result{}, err
+	}
+
 	// Check for the Skydive analyzer ConfigMap
 	// TODO If the ConfigMap exists, make sure it's current
+	// TODO Reconcile on ConfigMap changes
 	curAnalyzerCM := &corev1.ConfigMap{}
 	err = r.Get(ctx, types.NamespacedName{Name: "skydive-analyzer-config", Namespace: skydive.Namespace}, curAnalyzerCM)
 	if err != nil && errors.IsNotFound(err) {
@@ -92,6 +117,7 @@ func (r *SkydiveReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	// Check for the skydive analyzer deployment
 	// TODO If the deployment exists, make sure it's current
+	// TODO Reconcile on Deployment changes
 	curDep := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: "skydive-analyzer", Namespace: skydive.Namespace}, curDep)
 	if err != nil && errors.IsNotFound(err) {
@@ -116,6 +142,7 @@ func (r *SkydiveReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	// Check for the Skydive agent ConfigMap
 	// TODO If the ConfigMap exists, make sure it's current
+	// TODO Reconcile on ConfigMap changes
 	curAgentCM := &corev1.ConfigMap{}
 	err = r.Get(ctx, types.NamespacedName{Name: "skydive-agent-config", Namespace: skydive.Namespace}, curAgentCM)
 	if err != nil && errors.IsNotFound(err) {
@@ -140,6 +167,7 @@ func (r *SkydiveReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 
 	// Check for the skydive agent daemonset
 	// TODO If the daemonset exists, make sure it's current
+	// TODO Reconcile on DaemonSet changes
 	curDS := &appsv1.DaemonSet{}
 	err = r.Get(ctx, types.NamespacedName{Name: "skydive-agent", Namespace: skydive.Namespace}, curDS)
 	if err != nil && errors.IsNotFound(err) {
@@ -196,12 +224,12 @@ func (r *SkydiveReconciler) agentDaemonSet(skydive *configv1alpha1.Skydive) (*ap
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
-			Template: v1.PodTemplateSpec{
+			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 				},
-				Spec: v1.PodSpec{
-					Tolerations: []v1.Toleration{
+				Spec: corev1.PodSpec{
+					Tolerations: []corev1.Toleration{
 						{Key: "node-role.kubernetes.io/master", Effect: "NoSchedule", Operator: "Exists"},
 					},
 					HostNetwork: true,
@@ -229,8 +257,8 @@ func (r *SkydiveReconciler) agentDaemonSet(skydive *configv1alpha1.Skydive) (*ap
 									},
 								},
 							},
-							SecurityContext: &v1.SecurityContext{Privileged: &privileged},
-							VolumeMounts: []v1.VolumeMount{
+							SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
+							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      "run",
 									MountPath: "/host/run",
@@ -252,35 +280,35 @@ func (r *SkydiveReconciler) agentDaemonSet(skydive *configv1alpha1.Skydive) (*ap
 							// TODO LivenessProbe
 						},
 					},
-					Volumes: []v1.Volume{
+					Volumes: []corev1.Volume{
 						{
 							Name: "run",
-							VolumeSource: v1.VolumeSource{
-								HostPath: &v1.HostPathVolumeSource{
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/var/run/netns",
 								},
 							},
 						},
 						{
 							Name: "ovsdb",
-							VolumeSource: v1.VolumeSource{
-								HostPath: &v1.HostPathVolumeSource{
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/var/run/openvswitch/db.sock",
 								},
 							},
 						},
 						{
 							Name: "data-kubelet",
-							VolumeSource: v1.VolumeSource{
-								HostPath: &v1.HostPathVolumeSource{
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/var/data/kubelet",
 								},
 							},
 						},
 						{
 							Name: "lib-kubelet",
-							VolumeSource: v1.VolumeSource{
-								HostPath: &v1.HostPathVolumeSource{
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
 									Path: "/var/lib/kubelet",
 								},
 							},
@@ -295,6 +323,49 @@ func (r *SkydiveReconciler) agentDaemonSet(skydive *configv1alpha1.Skydive) (*ap
 		return nil, err
 	}
 	return ds, nil
+}
+
+func (r *SkydiveReconciler) analyzerService(skydive *configv1alpha1.Skydive) (*corev1.Service, error) {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "skydive-analyzer",
+			Namespace: skydive.Namespace,
+			Labels:    map[string]string{"app": "skydive-analyzer"},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     "NodePort",
+			Selector: map[string]string{"app": "skydive", "tier": "analyzer"},
+			Ports: []corev1.ServicePort{
+				{
+					Name: "api",
+					Port: 8082,
+				},
+				{
+					Name:     "protobuf",
+					Port:     8082,
+					Protocol: "UDP",
+				},
+				{
+					Name: "etcd",
+					Port: 12379,
+				},
+				{
+					Name: "etcd-cluster",
+					Port: 12380,
+				},
+				{
+					Name: "es",
+					Port: 9200,
+				},
+			},
+		},
+	}
+
+	err := ctrl.SetControllerReference(skydive, svc, r.Scheme)
+	if err != nil {
+		return nil, err
+	}
+	return svc, nil
 }
 
 func (r *SkydiveReconciler) analyzerConfig(skydive *configv1alpha1.Skydive) (*corev1.ConfigMap, error) {
