@@ -113,7 +113,50 @@ func (r *SkydiveReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
+	// Check for the Skydive agent ConfigMap
+	// TODO If the ConfigMap exists, make sure it's current
+	curAgentCM := &corev1.ConfigMap{}
+	err = r.Get(ctx, types.NamespacedName{Name: "skydive-agent-config", Namespace: skydive.Namespace}, curAgentCM)
+	if err != nil && errors.IsNotFound(err) {
+		cm, err := r.agentConfig(skydive)
+		if err != nil {
+			log.Error(err, "Failed to create new ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating a new ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
+		err = r.Create(ctx, cm)
+		if err != nil {
+			log.Error(err, "Failed to create new ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
+			return ctrl.Result{}, err
+		}
+		// ConfigMap created successfully - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+
+	} else if err != nil {
+		log.Error(err, "Failed to get Agent ConfigMap")
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
+}
+
+func (r *SkydiveReconciler) agentConfig(skydive *configv1alpha1.Skydive) (*corev1.ConfigMap, error) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "skydive-agent-config",
+			Namespace: skydive.Namespace,
+			Labels:    map[string]string{"app": "skydive-agent"},
+		},
+		Data: map[string]string{
+			"SKYDIVE_AGENT_TOPOLOGY_PROBES": "netns netlink ovsdb socketinfo",
+			"SKYDIVE_AGENT_LISTEN":          "127.0.0.1:8081",
+		},
+	}
+	err := ctrl.SetControllerReference(skydive, cm, r.Scheme)
+	if err != nil {
+		return nil, err
+	}
+	return cm, nil
 }
 
 func (r *SkydiveReconciler) analyzerConfig(skydive *configv1alpha1.Skydive) (*corev1.ConfigMap, error) {
