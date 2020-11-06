@@ -22,6 +22,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -137,6 +138,30 @@ func (r *SkydiveReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 
+	// Check for the skydive agent daemonset
+	// TODO If the daemonset exists, make sure it's current
+	curDS := &appsv1.DaemonSet{}
+	err = r.Get(ctx, types.NamespacedName{Name: "skydive-agent", Namespace: skydive.Namespace}, curDS)
+	if err != nil && errors.IsNotFound(err) {
+		// Define a new daemonset
+		ds, err := r.agentDaemonSet(skydive)
+		if err != nil {
+			log.Error(err, "Failed to create new DaemonSet", "DaemonSet.Namespace", ds.Namespace, "DaemonSet.Name", ds.Name)
+			return ctrl.Result{}, err
+		}
+		log.Info("Creating a new DaemonSet", "DaemonSet.Namespace", ds.Namespace, "DaemonSet.Name", ds.Name)
+		err = r.Create(ctx, ds)
+		if err != nil {
+			log.Error(err, "Failed to create new DaemonSet", "DaemonSet.Namespace", ds.Namespace, "DaemonSet.Name", ds.Name)
+			return ctrl.Result{}, err
+		}
+		// DaemonSet created successfully - return and requeue
+		return ctrl.Result{Requeue: true}, nil
+	} else if err != nil {
+		log.Error(err, "Failed to get DaemonSet")
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -157,6 +182,119 @@ func (r *SkydiveReconciler) agentConfig(skydive *configv1alpha1.Skydive) (*corev
 		return nil, err
 	}
 	return cm, nil
+}
+
+func (r *SkydiveReconciler) agentDaemonSet(skydive *configv1alpha1.Skydive) (*appsv1.DaemonSet, error) {
+	labels := map[string]string{"app": "skydive", "tier": "agent"}
+	privileged := true
+	ds := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "skydive-agent",
+			Namespace: skydive.Namespace,
+		},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: v1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: v1.PodSpec{
+					Tolerations: []v1.Toleration{
+						{Key: "node-role.kubernetes.io/master", Effect: "NoSchedule", Operator: "Exists"},
+					},
+					HostNetwork: true,
+					HostPID:     true,
+					Containers: []corev1.Container{
+						{
+							Name:  "skydive-agent",
+							Image: "skydive/skydive",
+							Args:  []string{"agent", "--listen=0.0.0.0:8081"},
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 8081},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name:  "SKYDIVE_ANALYZERS",
+									Value: "$(SKYDIVE_ANALYZER_SERVICE_HOST):$(SKYDIVE_ANALYZER_SERVICE_PORT_API)",
+								},
+							},
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "skydive-agent-config",
+										},
+									},
+								},
+							},
+							SecurityContext: &v1.SecurityContext{Privileged: &privileged},
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "run",
+									MountPath: "/host/run",
+								},
+								{
+									Name:      "ovsdb",
+									MountPath: "/var/run/openvswitch/db.sock",
+								},
+								{
+									Name:      "data-kubelet",
+									MountPath: "/var/data/kubelet",
+								},
+								{
+									Name:      "lib-kubelet",
+									MountPath: "/var/lib/kubelet",
+								},
+							},
+							// TODO ReadinessProbe
+							// TODO LivenessProbe
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "run",
+							VolumeSource: v1.VolumeSource{
+								HostPath: &v1.HostPathVolumeSource{
+									Path: "/var/run/netns",
+								},
+							},
+						},
+						{
+							Name: "ovsdb",
+							VolumeSource: v1.VolumeSource{
+								HostPath: &v1.HostPathVolumeSource{
+									Path: "/var/run/openvswitch/db.sock",
+								},
+							},
+						},
+						{
+							Name: "data-kubelet",
+							VolumeSource: v1.VolumeSource{
+								HostPath: &v1.HostPathVolumeSource{
+									Path: "/var/data/kubelet",
+								},
+							},
+						},
+						{
+							Name: "lib-kubelet",
+							VolumeSource: v1.VolumeSource{
+								HostPath: &v1.HostPathVolumeSource{
+									Path: "/var/lib/kubelet",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	err := ctrl.SetControllerReference(skydive, ds, r.Scheme)
+	if err != nil {
+		return nil, err
+	}
+	return ds, nil
 }
 
 func (r *SkydiveReconciler) analyzerConfig(skydive *configv1alpha1.Skydive) (*corev1.ConfigMap, error) {
