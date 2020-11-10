@@ -22,6 +22,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -66,11 +67,27 @@ func (r *SkydiveReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 
 	// Check for the Skydive analyzer Service
-	// TODO If the Service exists, make sure it's current
 	// TODO Reconcile on Service changes
 	curAnalyzerService := &corev1.Service{}
 	err = r.Get(ctx, types.NamespacedName{Name: "skydive-analyzer", Namespace: skydive.Namespace}, curAnalyzerService)
-	if err != nil && errors.IsNotFound(err) {
+	if err == nil {
+		svc, err := r.analyzerService(skydive)
+		if err != nil {
+			log.Error(err, "Failed to create expected Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
+			return ctrl.Result{}, err
+		}
+		if !analyzerServiceEqual(curAnalyzerService, svc) {
+			log.Info("Updating Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
+			updateAnalyzerService(curAnalyzerService, svc)
+			err = r.Update(ctx, curAnalyzerService)
+			if err != nil {
+				log.Error(err, "Failed to update Service", "Service.Namespace", curAnalyzerService.Namespace, "Service.Name", curAnalyzerService.Name)
+				return ctrl.Result{}, err
+			}
+			// Service updated successfully - return and requeue
+			return ctrl.Result{Requeue: true}, nil
+		}
+	} else if err != nil && errors.IsNotFound(err) {
 		svc, err := r.analyzerService(skydive)
 		if err != nil {
 			log.Error(err, "Failed to create new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
@@ -367,8 +384,9 @@ func (r *SkydiveReconciler) analyzerService(skydive *configv1alpha1.Skydive) (*c
 			Selector: map[string]string{"app": "skydive", "tier": "analyzer"},
 			Ports: []corev1.ServicePort{
 				{
-					Name: "api",
-					Port: 8082,
+					Name:     "api",
+					Port:     8082,
+					Protocol: "TCP",
 				},
 				{
 					Name:     "protobuf",
@@ -376,16 +394,19 @@ func (r *SkydiveReconciler) analyzerService(skydive *configv1alpha1.Skydive) (*c
 					Protocol: "UDP",
 				},
 				{
-					Name: "etcd",
-					Port: 12379,
+					Name:     "etcd",
+					Port:     12379,
+					Protocol: "TCP",
 				},
 				{
-					Name: "etcd-cluster",
-					Port: 12380,
+					Name:     "etcd-cluster",
+					Port:     12380,
+					Protocol: "TCP",
 				},
 				{
-					Name: "es",
-					Port: 9200,
+					Name:     "es",
+					Port:     9200,
+					Protocol: "TCP",
 				},
 			},
 		},
@@ -396,6 +417,30 @@ func (r *SkydiveReconciler) analyzerService(skydive *configv1alpha1.Skydive) (*c
 		return nil, err
 	}
 	return svc, nil
+}
+
+func updateAnalyzerService(curSvc, expectedSvc *corev1.Service) {
+	curSvc.Spec.Ports = expectedSvc.Spec.Ports
+	curSvc.Spec.Selector = expectedSvc.Spec.Selector
+}
+
+func analyzerServiceEqual(svc1, svc2 *corev1.Service) bool {
+	if len(svc1.Spec.Ports) != len(svc2.Spec.Ports) {
+		return false
+	}
+	for _, p1 := range svc1.Spec.Ports {
+		found := false
+		for _, p2 := range svc2.Spec.Ports {
+			if p1.Port == p2.Port && p1.Protocol == p2.Protocol && p1.Name == p2.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *SkydiveReconciler) analyzerConfig(skydive *configv1alpha1.Skydive) (*corev1.ConfigMap, error) {
