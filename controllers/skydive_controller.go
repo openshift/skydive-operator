@@ -91,11 +91,26 @@ func (r *SkydiveReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	}
 
 	// Check for the Skydive analyzer ConfigMap
-	// TODO If the ConfigMap exists, make sure it's current
 	// TODO Reconcile on ConfigMap changes
 	curAnalyzerCM := &corev1.ConfigMap{}
 	err = r.Get(ctx, types.NamespacedName{Name: "skydive-analyzer-config", Namespace: skydive.Namespace}, curAnalyzerCM)
-	if err != nil && errors.IsNotFound(err) {
+	if err == nil {
+		cm, err := r.analyzerConfig(skydive)
+		if err != nil {
+			log.Error(err, "Failed to create expected ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
+			return ctrl.Result{}, err
+		}
+		if !equality.Semantic.DeepEqual(curAnalyzerCM.Data, cm.Data) {
+			log.Info("Updating ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
+			err = r.Update(ctx, cm)
+			if err != nil {
+				log.Error(err, "Failed to update ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
+				return ctrl.Result{}, err
+			}
+			// ConfigMap updated successfully - return and requeue
+			return ctrl.Result{Requeue: true}, nil
+		}
+	} else if err != nil && errors.IsNotFound(err) {
 		cm, err := r.analyzerConfig(skydive)
 		if err != nil {
 			log.Error(err, "Failed to create new ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
